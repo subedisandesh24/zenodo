@@ -1,55 +1,65 @@
 import streamlit as st
-import os
 import time
 import requests
 
-st.set_page_config(page_title="Zenodo Direct Uploader", layout="centered")
+st.set_page_config(page_title="Zenodo Uploader (Draft 23406926)", layout="centered")
 
-st.title("⚡ Direct High-Speed Zenodo Uploader")
-st.caption("Streams directly from your PC's storage to Zenodo API (No intermediate servers).")
+st.title("⚡ Zenodo High-Speed Dataset Uploader")
+st.subheader("Target Draft: `23406926`")
 
 DRAFT_ID = "23406926"
 
-token = st.text_input("Zenodo Access Token", type="password")
-file_path_input = st.text_input("File Path on your PC", placeholder=r"C:\path\to\tomato fruit detection dataset.zip")
+token = st.text_input(
+    "Zenodo Personal Access Token", 
+    type="password",
+    help="Your token from Zenodo > Applications > Personal access tokens"
+)
 
-if st.button("Start Direct Upload", type="primary"):
-    path = file_path_input.strip('\"').strip('\'').strip()
+# Native Streamlit "Browse files" button
+uploaded_file = st.file_uploader(
+    "Click below to browse and select your file", 
+    type=["zip", "tar", "gz", "7z"]
+)
 
+if uploaded_file is not None:
+    file_size_gb = uploaded_file.size / (1024**3)
+    st.success(f"Selected: **{uploaded_file.name}** ({file_size_gb:.2f} GB)")
+
+if st.button("Start High-Speed Upload", type="primary"):
     if not token:
         st.error("Please enter your Zenodo Token.")
-    elif not path or not os.path.isfile(path):
-        st.error("File not found! Make sure the path is correct.")
+    elif uploaded_file is None:
+        st.error("Please select a file using the Browse button above.")
     else:
-        file_name = os.path.basename(path)
-        file_size = os.path.getsize(path)
+        file_name = uploaded_file.name
+        file_size = uploaded_file.size
         headers = {"Authorization": f"Bearer {token.strip()}"}
 
-        st.info(f"Uploading **{file_name}** ({file_size / (1024**3):.2f} GB) directly to Draft `{DRAFT_ID}`...")
+        st.info(f"Connecting to Draft `{DRAFT_ID}`...")
 
-        # 1. Initialize draft file in Zenodo
-        with st.spinner("Connecting directly to Zenodo..."):
+        # 1. Initialize Zenodo draft file
+        with st.spinner("Preparing Zenodo endpoint..."):
             init_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files"
             init_res = requests.post(init_url, headers={**headers, "Content-Type": "application/json"}, json=[{"key": file_name}])
             
-            # If partially uploaded earlier, clear it first
+            # If an earlier stuck file exists, clear it
             if init_res.status_code == 400:
                 requests.delete(f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files/{file_name}", headers=headers)
                 init_res = requests.post(init_url, headers={**headers, "Content-Type": "application/json"}, json=[{"key": file_name}])
 
             if init_res.status_code not in [200, 201]:
-                st.error(f"Zenodo rejected request (HTTP {init_res.status_code}): {init_res.text}")
+                st.error(f"Failed to prepare Zenodo draft: {init_res.text}")
                 st.stop()
 
             target_put_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files/{file_name}/content"
             commit_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files/{file_name}/commit"
 
-        # 2. Live Speed & Progress Monitor
+        # 2. Progress Tracker
         progress_bar = st.progress(0.0)
         status_text = st.empty()
         speed_text = st.empty()
 
-        class DirectStream:
+        class StreamWrapper:
             def __init__(self, f_obj, total):
                 self.f_obj = f_obj
                 self.total = total
@@ -57,7 +67,7 @@ if st.button("Start Direct Upload", type="primary"):
                 self.last_time = time.time()
                 self.last_sent = 0
 
-            def read(self, chunk_size=4 * 1024 * 1024):  # 4MB chunks for max network speed
+            def read(self, chunk_size=4 * 1024 * 1024):  # 4MB chunks for fast throughput
                 data = self.f_obj.read(chunk_size)
                 if not data:
                     return b""
@@ -79,19 +89,19 @@ if st.button("Start Direct Upload", type="primary"):
             def __len__(self):
                 return self.total
 
-        # 3. Stream data
+        # 3. Stream directly to Zenodo
         try:
-            with open(path, "rb") as f:
-                res = requests.put(
-                    target_put_url,
-                    data=DirectStream(f, file_size),
-                    headers={**headers, "Content-Type": "application/octet-stream"}
-                )
+            uploaded_file.seek(0)
+            res = requests.put(
+                target_put_url,
+                data=StreamWrapper(uploaded_file, file_size),
+                headers={**headers, "Content-Type": "application/octet-stream"}
+            )
 
             if res.status_code in [200, 201]:
                 requests.post(commit_url, headers=headers)
                 progress_bar.progress(1.0)
-                st.success(f" Upload Complete! File added to Draft {DRAFT_ID} under your existing reserved DOI.")
+                st.success(f" Upload Complete! File added to Draft {DRAFT_ID} under your reserved DOI.")
                 st.balloons()
             else:
                 st.error(f"Upload failed: {res.text}")
