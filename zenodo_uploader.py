@@ -1,132 +1,99 @@
 import streamlit as st
+import os
 import time
 import requests
 
-st.set_page_config(page_title="Zenodo Uploader (Draft 23406926)", layout="centered")
+st.set_page_config(page_title="Zenodo Direct Uploader", layout="centered")
 
-st.title("🚀 Zenodo High-Speed Dataset Uploader")
-st.subheader("Target Draft: `23406926`")
+st.title("⚡ Direct High-Speed Zenodo Uploader")
+st.caption("Streams directly from your PC's storage to Zenodo API (No intermediate servers).")
 
 DRAFT_ID = "23406926"
 
-token_input = st.text_input(
-    "Zenodo Personal Access Token",
-    type="password",
-    help="Your token from Zenodo > Applications > Personal access tokens"
-)
+token = st.text_input("Zenodo Access Token", type="password")
+file_path_input = st.text_input("File Path on your PC", placeholder=r"C:\path\to\tomato fruit detection dataset.zip")
 
-uploaded_file = st.file_uploader(
-    "Choose your dataset (.zip)", 
-    type=["zip", "tar", "gz", "7z"]
-)
+if st.button("Start Direct Upload", type="primary"):
+    path = file_path_input.strip('\"').strip('\'').strip()
 
-if uploaded_file is not None:
-    file_size_gb = uploaded_file.size / (1024**3)
-    st.info(f"Selected: **{uploaded_file.name}** ({file_size_gb:.2f} GB)")
-
-if st.button("Start High-Speed Upload to Zenodo", type="primary"):
-    if not token_input:
-        st.error("Please enter your Zenodo Access Token.")
-    elif uploaded_file is None:
-        st.error("Please select a file to upload.")
+    if not token:
+        st.error("Please enter your Zenodo Token.")
+    elif not path or not os.path.isfile(path):
+        st.error("File not found! Make sure the path is correct.")
     else:
-        file_name = uploaded_file.name
-        file_size = uploaded_file.size
-        headers = {"Authorization": f"Bearer {token_input.strip()}"}
+        file_name = os.path.basename(path)
+        file_size = os.path.getsize(path)
+        headers = {"Authorization": f"Bearer {token.strip()}"}
 
-        upload_mode = "rdm"
-        target_put_url = None
-        commit_url = None
+        st.info(f"Uploading **{file_name}** ({file_size / (1024**3):.2f} GB) directly to Draft `{DRAFT_ID}`...")
 
-        with st.spinner("Connecting to Zenodo draft 23406926..."):
-            # Check classic bucket first
-            dep_url = f"https://zenodo.org/api/deposit/depositions/{DRAFT_ID}"
-            r = requests.get(dep_url, headers=headers)
+        # 1. Initialize draft file in Zenodo
+        with st.spinner("Connecting directly to Zenodo..."):
+            init_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files"
+            init_res = requests.post(init_url, headers={**headers, "Content-Type": "application/json"}, json=[{"key": file_name}])
             
-            if r.status_code == 200 and "bucket" in r.json().get("links", {}):
-                upload_mode = "bucket"
-                bucket_url = r.json()["links"]["bucket"]
-                target_put_url = f"{bucket_url}/{file_name}"
-            else:
-                # Modern InvenioRDM upload flow
-                rdm_init_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files"
-                init_resp = requests.post(
-                    rdm_init_url, 
-                    headers={**headers, "Content-Type": "application/json"},
-                    json=[{"key": file_name}]
-                )
-                
-                if init_resp.status_code == 400:
-                    del_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files/{file_name}"
-                    requests.delete(del_url, headers=headers)
-                    init_resp = requests.post(
-                        rdm_init_url, 
-                        headers={**headers, "Content-Type": "application/json"},
-                        json=[{"key": file_name}]
-                    )
+            # If partially uploaded earlier, clear it first
+            if init_res.status_code == 400:
+                requests.delete(f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files/{file_name}", headers=headers)
+                init_res = requests.post(init_url, headers={**headers, "Content-Type": "application/json"}, json=[{"key": file_name}])
 
-                if init_resp.status_code not in [200, 201]:
-                    st.error(f"Failed to initiate file (HTTP {init_resp.status_code}): {init_resp.text}")
-                    st.stop()
+            if init_res.status_code not in [200, 201]:
+                st.error(f"Zenodo rejected request (HTTP {init_res.status_code}): {init_res.text}")
+                st.stop()
 
-                target_put_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files/{file_name}/content"
-                commit_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files/{file_name}/commit"
+            target_put_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files/{file_name}/content"
+            commit_url = f"https://zenodo.org/api/records/{DRAFT_ID}/draft/files/{file_name}/commit"
 
-        # Setup Progress Tracking
+        # 2. Live Speed & Progress Monitor
         progress_bar = st.progress(0.0)
         status_text = st.empty()
         speed_text = st.empty()
 
-        class StreamWrapper:
+        class DirectStream:
             def __init__(self, f_obj, total):
                 self.f_obj = f_obj
                 self.total = total
-                self.uploaded = 0
+                self.sent = 0
                 self.last_time = time.time()
-                self.last_uploaded = 0
+                self.last_sent = 0
 
-            def read(self, size=2 * 1024 * 1024):
-                chunk = self.f_obj.read(size)
-                if not chunk:
+            def read(self, chunk_size=4 * 1024 * 1024):  # 4MB chunks for max network speed
+                data = self.f_obj.read(chunk_size)
+                if not data:
                     return b""
-                self.uploaded += len(chunk)
+                self.sent += len(data)
                 now = time.time()
                 elapsed = now - self.last_time
 
-                if elapsed >= 0.5 or self.uploaded >= self.total:
-                    delta = self.uploaded - self.last_uploaded
-                    speed = (delta / (1024 * 1024)) / elapsed if elapsed > 0 else 0
-                    pct = min(self.uploaded / self.total, 1.0)
+                if elapsed >= 0.5 or self.sent >= self.total:
+                    speed = ((self.sent - self.last_sent) / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+                    pct = min(self.sent / self.total, 1.0)
                     progress_bar.progress(pct)
-                    status_text.markdown(f"**Progress:** `{pct * 100:.1f}%` ({self.uploaded / (1024**3):.2f} GB / {self.total / (1024**3):.2f} GB)")
-                    speed_text.markdown(f"**Speed:** `{speed:.2f} MB/s`")
+                    status_text.markdown(f"**Progress:** `{pct * 100:.1f}%` ({self.sent / (1024**3):.2f} GB / {self.total / (1024**3):.2f} GB)")
+                    speed_text.markdown(f"**Upload Speed:** `{speed:.2f} MB/s`")
                     self.last_time = now
-                    self.last_uploaded = self.uploaded
+                    self.last_sent = self.sent
 
-                return chunk
+                return data
 
             def __len__(self):
                 return self.total
 
+        # 3. Stream data
         try:
-            uploaded_file.seek(0)
-            wrapped_stream = StreamWrapper(uploaded_file, file_size)
-            
-            put_resp = requests.put(
-                target_put_url,
-                data=wrapped_stream,
-                headers={**headers, "Content-Type": "application/octet-stream"}
-            )
+            with open(path, "rb") as f:
+                res = requests.put(
+                    target_put_url,
+                    data=DirectStream(f, file_size),
+                    headers={**headers, "Content-Type": "application/octet-stream"}
+                )
 
-            if put_resp.status_code in [200, 201]:
-                if upload_mode == "rdm" and commit_url:
-                    requests.post(commit_url, headers=headers)
-
+            if res.status_code in [200, 201]:
+                requests.post(commit_url, headers=headers)
                 progress_bar.progress(1.0)
-                st.success(f" Upload Complete to Draft {DRAFT_ID}!")
+                st.success(f" Upload Complete! File added to Draft {DRAFT_ID} under your existing reserved DOI.")
                 st.balloons()
             else:
-                st.error(f"Upload failed (HTTP {put_resp.status_code}): {put_resp.text}")
-
+                st.error(f"Upload failed: {res.text}")
         except Exception as e:
-            st.error(f"Error during upload: {e}")
+            st.error(f"Error: {e}")
