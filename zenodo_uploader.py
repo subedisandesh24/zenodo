@@ -11,7 +11,7 @@ st.subheader("Target Draft: `23406926`")
 # --- CONFIGURE YOUR CREDENTIALS HERE ---
 DRAFT_ID = "23357090"
 # Paste your token between the quotes below:
-ZENODO_TOKEN = "PASTE_YOUR_ACCESS_TOKEN_HERE"
+ZENODO_TOKEN = "HTF1PCwSBLydHPObkicUVH47aTvSDNTOXDKG0u3UskvJVWVhgvwYlDDAZv50"
 # ---------------------------------------
 
 token_input = st.text_input(
