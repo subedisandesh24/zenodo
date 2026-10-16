@@ -6,7 +6,7 @@ import requests
 st.set_page_config(page_title="Zenodo Uploader (Draft 23357090)", layout="centered")
 
 st.title("Zenodo High-Speed Dataset Uploader")
-st.subheader("Target Draft: `23357090`")
+st.subheader("Target Draft: `23406926`")
 
 # --- CONFIGURE YOUR CREDENTIALS HERE ---
 DRAFT_ID = "23357090"
